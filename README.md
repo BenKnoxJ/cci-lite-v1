@@ -176,26 +176,287 @@ This flow is locked and fully operational.
 
 ---
 
-## ✅ 6. Dashboard Requirements (Frozen for MVP)
+## ✅ 6. ## Phase 0 — Section 6: Dashboard Requirements (CCI Lite Demo Prototype)
 
-Dashboard reads **only** enriched and flattened files from S3.
+### **Overview**
 
-Sections:
+This section defines the full dashboard requirements for the **CCI Lite Dashboard Prototype**, based strictly on the flattened CSV schema produced by the current CCI Lite v1.3 engine. Nothing in this specification introduces fields or insights that do not already exist in the enriched JSON → flattened Athena view.
 
-* **Business Overview**
-* **QA Overview**
-* **Agent Performance**
-* **Calls Explorer**
-* **Call Detail View**
+The goal of this dashboard is to provide a clean, enterprise-grade demonstration of what CCI Lite can surface for businesses, QA managers, contact centres, and customer experience leaders. This is a **prototype**, but must reflect production-grade structure, UX patterns, and multi-tenant behaviour.
 
-All metrics are derived from:
+---
 
-* `final/v1.0/*.json`
-* `final/v2.0-flat/calls/*.jsonl`
-* `final/v2.0-flat/qa/*.jsonl`
+## **6.1 Principles & Constraints**
 
-No database queries.
-No backend joins.
+1. **Data truth = Flattened CSV / Athena View Only**
+   Every chart, metric, table, or search must use *only* columns present in the flattened CSV.
+
+2. **No artificial or invented metrics**
+   If the CSV does not contain it, the dashboard must not display it.
+
+3. **Multi-tenant ready**
+
+   * Dashboard loads *only* the tenant’s S3 data.
+   * Clerk provides auth and tenant isolation.
+
+4. **Dynamic QA & Metadata Support**
+   Tenants may have:
+
+   * Different QA rule counts
+   * Different recording metadata schemas
+   * Different categorisation / call IDs / labels
+
+   The dashboard must dynamically render based on what exists.
+
+5. **No backend heavy lifting**
+   The app reads directly from S3 JSON outputs via signed URL or API passthrough.
+
+---
+
+## **6.2 Dashboard Architecture Overview**
+
+The prototype consists of **three core dashboard modules**:
+
+### **1. Business Overview Dashboard**
+
+High-level estate-wide view of all processed calls within the date range.
+
+Uses only CSV fields such as:
+
+* call_id
+* started_at / ended_at
+* duration_seconds
+* direction
+* calling_party / called_party
+* sentiment scores
+* transcript_word_count
+* qa scores (per rule)
+* overall_qa_pass
+
+### **2. Agent Explorer + Drill-Down**
+
+Search → See agent performance → Drill into individual calls.
+
+Driven by:
+
+* normalised agent identifier (from calling_party matching tenant domain)
+* sentiment
+* qa_rule results
+* call duration
+* call volume
+
+### **3. Call Detail Insight Page**
+
+Deep dive: one call, full transcript, metrics, sentiment and QA breakdown.
+
+Driven by:
+
+* Transcript utterances
+* Comprehend sentiment outputs
+* QA evaluation JSON schema
+* Metadata fields (call start, end, direction)
+
+---
+
+## **6.3 Business Overview Dashboard (Global)**
+
+### **6.3.1 KPIs**
+
+All KPI cards must come directly from CSV fields:
+
+* **Total Calls**
+* **Total Duration (HH:mm)**
+* **Average Call Duration**
+* **Average Agent Sentiment** (using sentiment_score)
+* **% QA Passed** (qa_overall_pass boolean)
+* **Inbound vs Outbound Ratio** (using direction)
+
+### **6.3.2 Charts**
+
+All charts must map to flat fields:
+
+* **Daily Call Volume Trend** (count by started_at date)
+* **Direction Breakdown** (Pie: inbound/outbound/internal)
+* **Sentiment Distribution** (Bar: positive/neutral/negative score groupings)
+* **QA Pass/Fail Trend** (Line or Column)
+
+### **6.3.3 Tables**
+
+* **Top Agents by Call Volume**
+* **Top Agents by Positive Sentiment**
+* **Agents With Most QA Failures**
+
+All using only agent_id, sentiment, and QA pass/fail available in the CSV.
+
+---
+
+## **6.4 Agent Explorer Dashboard**
+
+### **6.4.1 Agent Search / Listing**
+
+With only CSV data, agent identification comes from:
+
+* Normalised calling_party or called_party fields flagged as internal agent domain
+
+List includes:
+
+* Agent Name/ID
+* Total Calls
+* Avg Duration
+* Avg Sentiment
+* QA Pass Rate
+
+### **6.4.2 Agent Detail Page**
+
+Metrics:
+
+* Total calls
+* Avg sentiment score
+* Avg call duration
+* QA pass rate
+
+Charts:
+
+* Sentiment trend over time
+* QA fail reasons (aggregated by rule)
+* Call volume trend
+
+Table:
+
+* List of all calls for that agent (call_id, date, duration, sentiment, QA result)
+
+---
+
+## **6.5 Call Detail Page (Deep Dive)**
+
+Full breakdown for a single call_id.
+
+### **6.5.1 Metadata**
+
+* call_id
+* calling_party / called_party
+* started_at, ended_at
+* duration_seconds
+* direction
+
+### **6.5.2 Transcript Viewer**
+
+Data fields:
+
+* speaker
+* text
+* timestamps
+
+### **6.5.3 Sentiment**
+
+* overall sentiment label
+* positive/neutral/negative scores
+
+### **6.5.4 QA Breakdown**
+
+Dynamic:
+
+* QA rule name
+* Pass/Fail
+* Reason/extract from the QA model (qa_rule_description)
+
+### **6.5.5 Word Count & Utterance Metrics**
+
+* transcript_word_count
+* utterance_count
+* agent vs customer talk ratio
+
+---
+
+## **6.6 Dynamic QA Rule Rendering**
+
+Tenants will have different QA rules.
+The dashboard must:
+
+* Read the QA rules from each call record (flat CSV columns)
+* Dynamically map each rule into the agent or call-level QA view
+* If a rule does not appear in a tenant’s dataset, the front-end hides it automatically
+
+This removes the need for hardcoded UI logic.
+
+---
+
+## **6.7 Multi-Tenant Normalisation Layer (Front-End)**
+
+Even though CCI Lite is ingestion-agnostic (ClarifyGo, 3CX, etc.), the dashboard must standardise:
+
+### **6.7.1 Agent Identification**
+
+Rules:
+
+* If calling_party endswith tenant domain → agent
+* If neither end matches → unknown
+
+### **6.7.2 Direction Mapping**
+
+Based on logic inside the analyzer Lambda:
+
+* inbound
+* outbound
+* internal
+* unknown
+
+### **6.7.3 Metadata Flexibility**
+
+If a tenant ingestion source includes extra metadata fields, the dashboard should:
+
+* Ignore unsupported columns
+* Render extended metadata only if present
+
+---
+
+## **6.8 Data Loading Pattern**
+
+The dashboard loads data using:
+
+* Direct S3 GET → signed URL → JSON/CSV fetch
+  or
+* Lightweight API proxy that serves S3 objects
+
+No computation occurs server-side.
+
+---
+
+## **6.9 Dashboard Pages Summary**
+
+### **1. Login / Tenant Selection (Clerk)**
+
+Tenant-isolated login.
+
+### **2. Business Overview**
+
+Estate-wide KPIs, charts, trends.
+
+### **3. Agent Explorer**
+
+Search agents → View agent metrics → Drill into calls.
+
+### **4. Agent Detail Page**
+
+Charts, QA summary, sentiment, call list.
+
+### **5. Call Detail Page**
+
+Full transcript, QA, sentiment, metadata.
+
+---
+
+## **6.10 What This Prototype Demonstrates**
+
+This dashboard acts as a powerful demonstration layer that shows:
+
+* What businesses will be able to see
+* How QA and sentiment insights surface operational problems
+* How call intelligence reveals customer experience patterns
+* How multi-tenant data can be standardised and visualised elegantly
+
+It is intentionally simple on backend, powerful on UX, and designed for rapid iteration into a full CCI SaaS product.
+
 
 **Phase 0 Status: COMPLETE & LOCKED**
 
