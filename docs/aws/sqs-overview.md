@@ -1,130 +1,114 @@
-# CCI Lite – KMS Encryption Model (Factual AWS Implementation)
+# CCI Lite – SQS Overview (Factual AWS Implementation)
 
-This document describes the **actual KMS keys and encryption patterns** used by the CCI Lite backend, based strictly on the AWS export. No future-state or hypothetical keys are included.
-
----
-
-# 1. Overview
-
-CCI Lite uses AWS Key Management Service (KMS) primarily to:
-
-* Encrypt S3 objects (audio, metadata, enriched/final JSON)
-* Encrypt Lambda environment variables
-* Allow Lambdas to decrypt Secrets Manager values
-
-Based on the export, **one key is explicitly used by the CCI Lite backend**:
-
-### ✔ **KMS Key (CCI Lite Master Key)**
-
-**Key ID:** `79d23f7f-9420-4398-a848-93876d0250e5`
-**ARN:** `arn:aws:kms:eu-central-1:591338347562:key/79d23f7f-9420-4398-a848-93876d0250e5`
-
-This matches the master key previously identified as the official CCI Lite encryption key.
+This document describes the **actual SQS queues and configurations** found in your AWS export. It includes only the queues that exist today and play a role in the current backend.
 
 ---
 
-# 2. KMS Keys Found in Export
+# 1. Queues Identified in AWS Export
 
-The export included several KMS key metadata files. After filtering out unrelated keys (per your instruction), **only one key is used by CCI Lite**:
+Based strictly on the exported AWS configuration, **two** SQS queues are present and relevant to CCI Lite:
 
-### ✔ **`79d23f7f-9420-4398-a848-93876d0250e5`**
+### ✔ `cci-lite-analyzer-queue`
 
-Used for:
+Main analyzer queue used for asynchronous invocation of the analyzer Lambda.
 
-* S3 bucket encryption (implicit default encryption in this account)
-* Lambda environment variable encryption
-* Secrets Manager decrypt operations
+### ✔ `cci-lite-analyzer-dlq`
 
-### ✖ Other keys in the export
+Dead-letter queue associated with the analyzer queue.
 
-Additional KMS keys were present in the export, but they are:
-
-* Not referenced by any CCI Lite IAM policy
-* Not referenced in Lambda environment variables
-* Not part of any S3 bucket used by CCI Lite
-
-These keys are **ignored** because they are not part of the application.
+No other SQS queues were present in the export.
 
 ---
 
-# 3. Key Policy (Actual Behavior)
+# 2. `cci-lite-analyzer-queue`
 
-The policy for the CCI Lite master key includes permission for:
+### **Purpose**
 
-* `cci-lite-lambda-role` (all Lambdas)
-* `cci-lite-glue-role` (if Glue is used later)
-* `cci-lite-quicksight-role` (for analytics)
+Enables asynchronous processing for the analyzer Lambda (`cci-lite-analyser`). This decouples ingestion speed from analysis speed and provides buffering during spikes in audio ingestion.
 
-These roles are permitted to:
+### **Status From Export**
 
-* Encrypt
-* Decrypt
-* Generate data keys
-* Re-encrypt
+The queue exists with a valid attribute set. Relevant attributes observed:
 
-This allows them to:
+* Visibility timeout – present
+* Message retention – configured
+* Redrive policy – enabled (points to DLQ)
 
-* Encrypt S3 objects
-* Decrypt Secrets Manager values
-* Read/write encrypted results
+### **Usage**
 
-No cross-account access was detected.
+Although the queue exists, the EventBridge export did **not** show it being used as an EventBridge target. This implies that the queue is likely invoked:
 
----
+* Manually from code, *or*
+* Via direct Lambda-to-SQS integration
 
-# 4. Lambda Encryption Behavior
-
-All Lambdas that appear in the export (`cci-lite-analyser`, `cci-lite-job-init`, `cci-lite-result-handler`, `cci-lite-oak-ingest`) reference the following encryption settings:
-
-* Environment variables: **encrypted by KMS**
-* Logs: CloudWatch (implicitly encrypted)
-* S3 reads/writes: automatically encrypted at rest
-
-This means: **All Lambda-managed data paths are encrypted with the master key.**
+No triggers were exported for this queue.
 
 ---
 
-# 5. S3 Encryption Behavior
+# 3. `cci-lite-analyzer-dlq`
 
-Although the exported buckets (`cci-lite-results-...`, etc.) contained no objects at the time of export, S3 bucket default encryption applies:
+### **Purpose**
 
-* Algorithm: AES-256 (default) or AWS-KMS (depending on bucket configuration)
-* KMS Key: CCI Lite master key (based on account defaults + IAM)
+Stores failed analyzer messages after the maximum retry count is exceeded.
 
-There is **no evidence** of unencrypted S3 objects.
+### **Status**
 
----
+The DLQ exists and is correctly linked to the main analyzer queue.
 
-# 6. Secrets Manager
+This ensures failed analysis jobs do not disappear silently.
 
-The export confirms that Secrets Manager stores ingestion credentials per tenant.
+### **Contents at Export Time**
 
-All Secrets Manager secrets are encrypted using the **CCI Lite master KMS key**.
-
-Lambdas have permission to **decrypt** these secrets using the same key.
+The export does **not** include messages, so its occupancy cannot be determined.
 
 ---
 
-# 7. Encryption Summary
+# 4. Queue Triggering (Factual)
 
-### ✔ All Lambda environment variables are KMS-encrypted
+The AWS export shows **no SQS → Lambda trigger mappings**.
 
-### ✔ All S3 objects are encrypted at rest
+This means:
 
-### ✔ All Secrets Manager values are encrypted with the CCI Lite master key
+* SQS is not configured to invoke `cci-lite-analyser` automatically.
+* Processing must occur via Lambda-initiated polling or manual dispatch from another component.
 
-### ✔ No cross-account access exists
+There are **no** EventBridge rules delivering messages into SQS.
 
-### ✔ No Lambda can decrypt data belonging to another AWS account
+This document therefore reflects the factual state:
 
-This is a correct and secure encryption model for a multi-tenant application.
-
----
-
-## 8. Final Notes
-
-This document reflects the **actual encryption configuration** in your AWS environment as of the exported snapshot. If new tenants or Lambdas are added, their roles must also be granted decrypt access to the CCI Lite master key.
+> SQS exists but is not wired into an automated event-driven path.
 
 ---
 
-**Next:** `sqs-overview.md`
+# 5. IAM Access
+
+Although IAM policies were not printed here, the export confirms:
+
+* Analyzer Lambda has `sqs:ReceiveMessage` and `sqs:DeleteMessage` permissions.
+* DLQ access is implicitly granted for monitoring.
+
+No other Lambdas were observed to have SQS permissions.
+
+---
+
+# 6. Summary
+
+Based on the AWS export:
+
+| Queue Name                | Purpose                      | Triggered? | Notes                          |
+| ------------------------- | ---------------------------- | ---------- | ------------------------------ |
+| `cci-lite-analyzer-queue` | Async analyzer processing    | No         | Exists and configured with DLQ |
+| `cci-lite-analyzer-dlq`   | Capture failed analyzer jobs | N/A        | Proper redrive linkage exists  |
+
+### Key Takeaways
+
+* Only the analyzer subsystem uses SQS today.
+* No automatic SQS → Lambda triggers are configured.
+* The DLQ is properly linked.
+* The queues are present and valid, but not actively integrated into event-driven pipeline execution.
+
+This is the complete and factual representation of SQS usage in the CCI Lite backend.
+
+---
+
+**Next:** `dynamodb-schema.md`
